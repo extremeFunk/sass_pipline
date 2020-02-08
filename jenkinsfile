@@ -1,0 +1,111 @@
+def TAG
+pipeline {
+    agent any
+    tools {
+        maven 'maven-tool'
+    }
+    stages {
+        stage('build') {
+            steps {
+                echo '##########################################################'
+                echo '###                        build                       ###'
+                echo '##########################################################'
+
+                configFileProvider([configFile(fileId: 'suggest-mvn-set', variable: 'settings')]) {
+                    sh 'mvn -s $settings clean verify'
+                }
+                script {
+                   if (env.BRANCH_NAME == 'master') {
+                       TAG = 'master'
+                   }
+                   else {
+                       TAG = sh (script: "echo \$(echo \${BRANCH_NAME} | cut -d / -f 2)" ,returnStdout: true).trim()
+                   }
+                   echo TAG
+                   sh "docker build --force-rm -f Dockerfile.run -t toxic-runner:${TAG} ."
+                }
+            }
+        }
+        stage('test') {
+            steps {
+                echo '##########################################################'
+                echo '###                        test                        ###'
+                echo '##########################################################'
+                sh """
+#                    docker network create tox-net
+                    docker run -d --network tox-net --name toxic-runner-${TAG} toxic-runner:${TAG}
+                    docker build --force-rm -f Dockerfile.test -t toxic-e2e:${TAG} .
+                    sleep 5
+                    docker run --rm --network tox-net --name toxic-e2e-${TAG} toxic-e2e:${TAG} python e2e_test.py toxic-runner-${TAG}:8080 e2e
+                """
+            }
+        }
+        stage('publish') {
+            when { branch 'master' }
+            steps {
+                echo '##########################################################'
+                echo '###                        publish                     ###'
+                echo '##########################################################'
+
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-iam']]) {
+                    sh '$(aws ecr get-login --no-include-email --region eu-north-1)'
+                }
+                sh "docker tag toxic-runner:${TAG} 860280202050.dkr.ecr.eu-north-1.amazonaws.com/toxic:latest"
+                sh 'docker push 860280202050.dkr.ecr.eu-north-1.amazonaws.com/toxic:latest'
+            }
+        }
+        stage('provision') {
+            when { branch 'master'}
+            steps {
+                echo '##########################################################'
+                echo '###                        provision                   ###'
+                echo '##########################################################'
+                sh 'echo [app] > app.inv'
+                sh 'terraform init'
+                sh 'terraform destroy -auto-approve'
+                sh 'terraform plan'
+                sh 'terraform apply -auto-approve'
+            }
+        }
+        stage('deploy') {
+            when { branch 'master'}
+            steps {
+                echo '##########################################################'
+                echo '###                        deploy                      ###'
+                echo '##########################################################'
+                sleep 5
+                withEnv(["PATH+ANSIBLE=${tool 'ansible'}"]) {
+                    sshagent (credentials: ['ubuntu']) {
+                        ansiblePlaybook(
+                            credentialsId: 'toxic-ec2',
+                            inventory: 'app.inv',
+                            installation: 'ansible',
+                            playbook: 'toxic-deploy.yml',
+                            extras: '--user ubuntu -b -vvv'
+                        )
+                    }
+//                     sh 'echo yes | ansible-playbook -i java.inv java.yml --private-key=toxic.pem --user ubuntu -b'
+                }
+            }
+        }
+    }
+    post {
+        always {
+            echo 'Post'
+            sh "docker rm -f toxic-runner-${TAG}"
+            sh 'rm -v !(terraform.tfstate .terraform)'
+        }
+        success {
+            echo 'Succeeeded!'
+        }
+        unstable {
+            echo 'Unstable'
+        }
+        failure {
+            echo 'Failed!'
+        }
+        changed {
+            echo 'Changed'
+        }
+    }
+}
