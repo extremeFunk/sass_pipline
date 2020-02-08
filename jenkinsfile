@@ -84,7 +84,6 @@ pipeline {
                             extras: '--user ubuntu -b -vvv'
                         )
                     }
-//                     sh 'echo yes | ansible-playbook -i java.inv java.yml --private-key=toxic.pem --user ubuntu -b'
                 }
             }
         }
