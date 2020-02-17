@@ -32,7 +32,9 @@ pipeline {
                 echo '###                        test                        ###'
                 echo '##########################################################'
                 sh """
-#                    docker network create tox-net
+                    if [ \$(docker network ls | grep -c tox-net) -eq 0 ];
+                      then docker network create tox-net;
+                    fi
                     docker run -d --network tox-net --name toxic-runner-${TAG} toxic-runner:${TAG}
                     docker build --force-rm -f Dockerfile.test -t toxic-e2e:${TAG} .
                     sleep 5
@@ -60,9 +62,8 @@ pipeline {
                 echo '##########################################################'
                 echo '###                        provision                   ###'
                 echo '##########################################################'
-                sh 'echo [app] > app.inv'
+
                 sh 'terraform init'
-                sh 'terraform destroy -auto-approve'
                 sh 'terraform plan'
                 sh 'terraform apply -auto-approve'
             }
